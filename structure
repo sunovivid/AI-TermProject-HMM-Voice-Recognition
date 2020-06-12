@@ -1,0 +1,75 @@
+TODO:
+1. 음소 HMM(hmm.txt/hmn.h), 발음사전(dictionary.txt) 이용해 단어 HMM들 구축
+2. language model(unigram.txt & bigram.txt) 추가해 임의의 단어 시퀀스 인식하는 HMM 구축
+3. 비터비 알고리즘 이용해 모든 테스트 파일(tst.zip)에 대해 best state sequence 구하고 단어 sequence로 만든 다음 결과 출력
+4. language model weight 조정해 insertion/deletion 에러 비율 조정하는 실험 반복
+5. 소스 코드, 프로그램 실행방법, 실험 결과 제출
+
+input(feature) vector sequence file (tst\*(F/M)\*(화자 이니셜)\*(filename).txt)
+    .txt
+    319(행) 39(벡터 차원)
+    벡터1
+    벡터2
+    ...
+    벡터313
+
+음향 모델: three state phone HMM
+    5 x 5 transition probability matrix
+    T = [T00, T01, T02, T03, T04,
+         T10, ...
+         ...
+                             T44]
+        Tij = i to j transition probability (i,j=1,2,3 0=시작,4=끝)
+
+센서 모델: diagonal cov matrix 사용하는 Gaoussian mixture model
+
+
+음소 HMM: 음소별 sensor model, transition model
+    hmm.txt
+        <BEGINHMM>
+            <NUMSTATES> (-2필요) 센서 모델?
+                <STATE> 2 (-1필요)
+                    <NUMMIXES> 2 mixed Gaussian 개수
+                    <MIXUTRE> 1 4.817315e-001 첫번째 가우시안 weight
+                        <MEAN> 39 첫번째 가우시안 mean
+                        <VARIANCE> 39 첫번째 가우시안 var
+                    <MIXTURE> 2 5.182614e-001 두번째 가우시안 weight
+                        <MEAN>
+                        <VARIANCE>
+                <STATE> 3
+                    ...
+                <STATE> 4
+                    ...
+            <TRANSP> transition probability 트랜지션 모델?
+        <ENDHMM>
+
+        optional silence HMM
+        <NUMSTATES> 3 (= 1)
+        <TRANSP> 3 (3x3 matrix)
+
+    hmm.h 헤더파일로 제공
+
+
+구현이슈: underflow때문에 log 적용할때 덧셈 주의사항 있음, weight sum할때 주의
+
+vocabulary.txt 인식할 단어
+dictionary.txt 발음사전 (<s> = silence)
+
+발음사전으로 단어 HMM 구현
+단어 HMM 병렬 연결해 임의 단어 시퀀스 인식 HMM 구현 (silence 루프 포함)
+
+Language model
+    unigram.txt
+    bigram.txt: eight eight: eight다음에 eight이 올 확률
+
+viterbi algorithm으로 음성 인식 엔진 구현
+
+Word Label File
+    reference.txt: 인식할 음성의 정답
+
+Output file
+    recognized.txt: reference.txt와 같은 형식으로 출력 (단, 확장자를 lab에서 rec로 변경)
+
+정답 비교:
+    HResults -p -I reference.txt vocabulary.txt recognized.txt
+    word transition panalty를 조정해 insertion/deletion에러 비율 맞춰라
