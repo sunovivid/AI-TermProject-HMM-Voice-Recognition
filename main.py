@@ -9,31 +9,30 @@ import math
 import pickle
 import time
 
-import numpy as np
-np.set_printoptions(formatter={"float_kind": lambda x: "{0:+0.2f}".format(x)})# 4.2
+import multiprocessing as mp
+from functools import partial
 
-import matplotlib.pyplot as plt
-import networkx as nx
+import numpy as np
+# np.set_printoptions(formatter={"float_kind": lambda x: "{0:+0.2f}".format(x)})# 4.2
 
 #TODO 1. 음소 HMM(hmm.txt/hmn.h), 발음사전(dictionary.txt) 이용해 단어 HMM 구축
 #TODO 2. language model(bigram.txt) 추가해 임의의 단어 시퀀스 HMM 구축
 
 #HYPERPARAMETER
-LANGUAGE_MODEL_WEIGHT = 1
+LANGUAGE_MODEL_WEIGHT = 2
 
 #CONSTANT
 N_STATE	= 3
 N_PDF = 2
 PI = 3.14
 N_DIMENSION = 39
-COEF = (2 * PI) ** (N_DIMENSION / 2)
 
 FILEPATH_UNIGRAM = './data/unigram.txt'
 FILEPATH_BIGRAM = './data/bigram.txt'
 FILEPATH_DICTIONARY = './data/dictionary.txt'
 FILEPATH_HMM = './data/hmm.txt'
 FILEPATH_DATA = './data'
-FILEPATH_TEST = './data/tst'
+FILEPATH_TEST = './tst'
 FILEPATH_RECOGNIZED = './'
 PHONES = list(
     {"ey", "t", "f", "ay", "v", "ao", "n", "ow", "w", "ah", "s", "eh", "ih", "k", "th", "r", "iy", "uw", "z", "sp", "sil"})
@@ -92,8 +91,8 @@ class StatePdf(): #Gaussian mixture model emission probability for certain state
         self.mean2 = mean2
         self.var1 = var1
         self.var2 = var2
-        self.a = w1 / COEF / math.sqrt(reduce(operator.mul, var1)) #속도 향상을 위해 미리 계산
-        self.b = w2 / COEF / math.sqrt(reduce(operator.mul, var2))
+        self.log_a = math.log(w1) - (N_DIMENSION / 2) * math.log(2 * PI) - math.log(reduce(operator.mul, var1)) / 2 #속도 향상을 위해 미리 계산
+        self.log_b = math.log(w1) - (N_DIMENSION / 2) * math.log(2 * PI) - math.log(reduce(operator.mul, var2)) / 2
 
 class Hmm():
     def __init__(self, prior_prob, tp, states):
@@ -109,11 +108,11 @@ class Hmm():
         state_pdf = self.states[state]["statePdf"]
         if state_pdf is None: # for state index 0
             return 0
-        a = state_pdf.a # state.a = w1 / COEF / reduce(operator.mul, sigma1) 미리 계산해둔 값 불러옴
-        b = state_pdf.b # state.b = w2 / COEF / reduce(operator.mul, sigma2)
+        log_a = state_pdf.log_a # state.a = w1 / COEF / reduce(operator.mul, sigma1) 미리 계산해둔 값 불러옴
+        log_b = state_pdf.log_b # state.b = w2 / COEF / reduce(operator.mul, sigma2)
         p = -0.5 * sum( map ( operator.truediv, map ( lambda x: pow(x,2), map ( operator.sub, evidence, state_pdf.mean1)), state_pdf.var1) )
         q = -0.5 * sum( map ( operator.truediv, map ( lambda x: pow(x,2), map ( operator.sub, evidence, state_pdf.mean2)), state_pdf.var2) )
-        return math.log(a) + p + math.log(1 + (b/a) * math.exp(q-p))
+        return log_a + p + math.log(1 + (math.exp(log_a - log_b + q - p)))
 
     def log_sensor_arr(self, evidence):
         arr = np.zeros(self.NUM_OF_STATES, np.float)
@@ -121,7 +120,7 @@ class Hmm():
             arr[state] = self.log_sensor_model(evidence, state) #state 1부터 n까지의 pdf를 arr 0부터 n-1에 저장
         return arr
 
-    def print_hmm(self):
+    def print_state(self):
         prev_word = ""
         print("STATES")
         for i, state_dict in enumerate(self.states):
@@ -131,6 +130,7 @@ class Hmm():
                 prev_word = state_dict['word']
             print(f" {i}({state_dict['phone']})", end=' /')
 
+    def print_tp(self):
         print()
         print("TP")
         print_tp_with_state(self, self.logscale_tp)
@@ -228,7 +228,7 @@ def get_test_data():
                     MFCC_vec_array = np.empty((num_of_vec, dimension), 'f8')
                     for i, line in enumerate(MFCC_file):
                         MFCC_vec_array[i] = list(map(float,line.split()))
-                    test_data[f"test/{folder_sex}/{folder_inner}/{filename}"] = MFCC_vec_array
+                    test_data[f"{FILEPATH_TEST}/{folder_sex}/{folder_inner}/{filename}"] = MFCC_vec_array
 
     with open(os.path.join(FILEPATH_DATA,'test_data.p'),'wb') as test_data_file:
         pickle.dump(test_data, test_data_file)
@@ -312,7 +312,6 @@ def construct_word_seq_hmm(unigram, bigram, dictionary, phone_hmm_data):
             assert (len(states) == idx)
 
     # 예외 케이스: zero의 "ih" 경로 생성
-    print(idx)
 
     prob_z_branch = tp[zero_z_end_idx][zero_z_end_idx+1]
     tp[zero_z_end_idx][zero_z_end_idx + 1] = prob_z_branch / 2 #기존 iy 경로 확률 절반으로
@@ -333,9 +332,11 @@ def construct_word_seq_hmm(unigram, bigram, dictionary, phone_hmm_data):
         tp[last][word_begin_idx_dict[str2]] = LANGUAGE_MODEL_WEIGHT * last_sp_end_prob[str1] * prob
 
     # Make word_idx_info (word_begin_idx_dic = {idx: "word"}, word_end_idx_list = [0,11,...])
-    word_begin_idx_dict = dict([(value, key) for key, value in word_begin_idx_dict.items()])
-    word_end_idx_list = [value for key, value in word_end_idx_dict.items()]
-    word_idx_info = (word_begin_idx_dict, word_end_idx_list)
+    begin_idx_to_word = dict([(value, key) for key, value in word_begin_idx_dict.items()])
+    word_to_end_idx = word_end_idx_dict
+    # print(word_begin_idx_dict)
+    # print(word_end_idx_dict)
+    word_idx_info = (begin_idx_to_word, word_to_end_idx)
 
     return word_idx_info, Hmm(prior_prob, tp, states)
 
@@ -350,53 +351,42 @@ def viterbi(word_idx_info, evidence, hmm):
     m2 = np.empty((len(evidence),hmm.NUM_OF_STATES),dtype='i8')
     m1[0] = hmm.logscale_prior_prob + hmm.log_sensor_arr(evidence[0]) #statewise logsum, sensor: state마다 log(p(e|s))를 계산한 배열
     m2[0] = np.zeros(NUM_OF_STATES)
-    m2.fill(-1)
-
-    # print(f"\n*************************m1[{0}]*************************")
-    # print_with_state(hmm, m1[0])
-    # print(f"\n*************************m2[{0}]*************************")
-    # print_with_state(hmm, m2[0])
+    m2.fill(-1) #이게 문제? TODO
 
     for t in range(1, len(evidence)):
         if t % 50 == 0:
             print(f"\tProcessing MFCC vector {t}/{len(evidence)-1}")
         m1[t] = np.max(m1[t-1] + np.transpose(hmm.logscale_tp), axis=1) + hmm.log_sensor_arr(evidence[t]) #m1[t]: 시간 t에서 각 state로 올 수 있는 가장 큰 확률 * 현재 state의 sensor
-        # print_tp_with_state(hmm, m1[t-1] + np.transpose(hmm.logscale_tp))
-        # print_with_state(hmm, np.max(m1[t-1] + np.transpose(hmm.logscale_tp), axis=1))
-        # input("a")
-        # print(f"\n*************************m1[{t}]*************************")
-        # print_with_state(hmm, m1[t])
-
         m2[t] = np.argmax(m1[t-1] + np.transpose(hmm.logscale_tp), axis=1)
-        # print(f"\n*************************m2[{t}]*************************")
-        # print_with_state(hmm, m2[t])
-        # input("waiting..")
 
     q = np.empty(len(evidence),dtype='i8')
     q[len(evidence)-1] = np.argmax(m1[len(evidence)-1])
     for t in range(len(evidence)-2,-1,-1):
         q[t] = m2[t][q[t+1]]
-    print(q)
+    print(f"\tBest state sequence: \n{q}")
 
 
     #Get word sequence from best state sequence
 
     word_seq = []
     cur_word = ""
-    word_begin_idx_dict, word_end_idx_list = word_idx_info
-    for state in q:
-        if state in word_begin_idx_dict: #word_begin_idx_dict = {98: "seven"}
-            if cur_word != word_begin_idx_dict[state]:
-                cur_word = word_begin_idx_dict[state]
-                word_seq.append(word_begin_idx_dict[state])
-    if q[-1] not in word_end_idx_list:
-        print("\tWarning: MFCC file ends not at end of a phone")#assert last state is end of phone
+    begin_idx_to_word, word_to_end_idx = word_idx_info
+    state = -1
+    last_state = -1
+    for state in q[1:]:
+        if state in begin_idx_to_word:
+            cur_word = begin_idx_to_word[state]
+        if state == word_to_end_idx[cur_word]-1 and last_state != state: #word_begin_idx_dict = {98: "seven"}
+            if cur_word != "<s>":
+                word_seq.append(cur_word)
+        last_state = state
+
     #절반 이상 탐색했으면 단어로?
     #<s>는 출력 안함
     print(f"\tComplete")
+    if word_seq[0] == "two":
+        return word_seq[1:]
     return word_seq
-
-
 
 if __name__ == "__main__":
 
@@ -409,16 +399,19 @@ if __name__ == "__main__":
     result_data = OrderedDict()
 
     with open(f'{FILEPATH_RECOGNIZED}/recognized.txt','w') as recognized_file:
-        recognized_file.write("#!MLF!#")
-        for name, MFCC_vec_array in test_data.items():
-            print(f"Processing {name}..")
+        recognized_file.write("#!MLF!#\n")
+        num_file = len(test_data)
+        for i, (name, MFCC_vec_array) in enumerate(test_data.items()):
+            begin_file = time.time()
+            print(f"\n\nProcessing {name}.. [{i}/{num_file}]")
             word_seq = viterbi(word_idx_info, MFCC_vec_array, word_seq_hmm)
-            print(word_seq)
-            recognized_file.write(f"{name}.rec\n")
+            print(f"Word seq: {word_seq}")
+            recognized_file.write(f"{name.split('.')[0] + '.rec'}\n")
             for word in word_seq:
-                recognized_file.write(f"{word}.rec\n")
+                recognized_file.write(f"{word}\n")
             recognized_file.write(".\n")
+            print(f"소요 시간: {'{0:0.2f}'.format(time.time() - begin_file)}초")
 
-    print(f"소요 시간: {time.time() - begin}")
+    print(f"총 소요 시간: {'{0:0.2f}'.format(time.time() - begin)}초")
 
 
